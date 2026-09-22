@@ -73,6 +73,57 @@ Every subcommand supports `--env` and `--tenant` to target a different
 environment/tenant than the default. Run `rana <command> --help` or
 `rana <command> <subcommand> --help` to see all options.
 
+### Automation, ops & workflow commands
+
+```bash
+# Bulk-upload a local directory tree, or mirror it to a project's file tree
+rana files upload-tree ./output --project <project_id> --dest results/
+rana files sync ./output --project <project_id> --dest results/ --dry-run
+rana files sync ./output --project <project_id> --dest results/ --delete   # prompts before deleting
+
+# Invite a batch of people from a CSV (columns: email, tenant_role, project, project_role)
+rana invitations bulk-create ./team.csv --dry-run
+rana invitations bulk-create ./team.csv
+
+# Poll a job to completion — exits 0/1/2 (success/failure/timeout), for use in CI
+rana jobs watch <job_id> --timeout 1800
+
+# Publish a new publication version after a job finishes
+rana jobs watch <job_id> && \
+  rana publications versions create <publication_id> --version 3 \
+    --file results/map.tif --file results/report.pdf
+
+# A pipeable/Slack-able digest of failed jobs, unresolved comments, pending invitations
+rana digest run --since 24h
+rana digest run --since 24h --format json | jq .
+rana digest run --slack-webhook "$SLACK_WEBHOOK_URL"   # or set $RANA_SLACK_WEBHOOK
+
+# Comments as a review queue
+rana publications comments list <publication_id> --unresolved
+rana publications comments reply <publication_id> <comment_id> --body "Looks good, thanks!"
+rana publications comments resolve <publication_id> <comment_id>
+
+# Fuzzy-pick a project/dataset instead of typing its id
+rana files ls --project $(rana projects pick) --path some/dir
+```
+
+`rana shell` launches an interactive Textual command console — type any of
+the commands above without the leading `rana`, with history and a
+scrollback log.
+
+### Shell completion
+
+```bash
+# bash (~/.bashrc) or zsh (~/.zshrc, after `autoload -U +X compinit && compinit`)
+eval "$(register-python-argcomplete rana)"
+```
+
+Gives you subcommand/flag completion everywhere, plus live completion of
+project/dataset/publication ids (e.g. `rana files ls --project <TAB>`) —
+backed by a short-lived local cache so it doesn't hit the API on every
+keystroke, and fails silently (no completions) if the API is slow or
+unreachable rather than hanging your shell.
+
 ### The `call` escape hatch
 
 Not every one of the ~130 API operations has a dedicated subcommand. For

@@ -15,7 +15,7 @@ class RanaClient:
 
     def request(self, method: str, path: str, tenant_id: str = None, query: dict = None,
                 json_body=None, data=None, extra_headers: dict = None,
-                retry_on_401: bool = True) -> requests.Response:
+                retry_on_401: bool = True, timeout: float = 60) -> requests.Response:
         """
         `path` may contain `{tenant_id}`, filled in from cfg (or the tenant_id
         arg) automatically. Any other `{placeholder}` (e.g. `{project_id}`)
@@ -32,13 +32,13 @@ class RanaClient:
         url = self.cfg["api_base_url"].rstrip("/") + "/" + path.lstrip("/")
         resp = requests.request(
             method.upper(), url, params=query, json=json_body, data=data,
-            headers=headers, timeout=60,
+            headers=headers, timeout=timeout,
         )
 
         if resp.status_code == 401 and retry_on_401:
             auth_mod.get_valid_access_token(self.cfg, force_refresh=True)
             return self.request(method, path, tenant_id, query, json_body, data,
-                                 extra_headers, retry_on_401=False)
+                                 extra_headers, retry_on_401=False, timeout=timeout)
         return resp
 
     def get(self, path, **kwargs):

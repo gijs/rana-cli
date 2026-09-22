@@ -1,5 +1,10 @@
-from ._shared import (add_body_args, add_env_tenant_args, add_pagination_args,
-                       emit, get_client, pagination_query, resolve_body)
+import sys
+
+from ..picker import pick
+from ._shared import (add_body_args, add_env_tenant_args, add_pagination_args, emit,
+                       get_client, id_completer, paginate_all, pagination_query, resolve_body)
+
+_project_completer = id_completer("/tenants/{tenant_id}/projects")
 
 
 def register(subparsers):
@@ -16,7 +21,7 @@ def register(subparsers):
 
     p_get = sub.add_parser("get", help="show a project")
     add_env_tenant_args(p_get)
-    p_get.add_argument("project_id")
+    p_get.add_argument("project_id").completer = _project_completer
     p_get.set_defaults(func=cmd_get)
 
     p_create = sub.add_parser("create", help="create a project")
@@ -30,7 +35,7 @@ def register(subparsers):
 
     p_update = sub.add_parser("update", help="update a project")
     add_env_tenant_args(p_update)
-    p_update.add_argument("project_id")
+    p_update.add_argument("project_id").completer = _project_completer
     p_update.add_argument("--code", default=None)
     p_update.add_argument("--name", default=None)
     p_update.add_argument("--description", default=None)
@@ -40,26 +45,35 @@ def register(subparsers):
 
     p_delete = sub.add_parser("delete", help="delete a project")
     add_env_tenant_args(p_delete)
-    p_delete.add_argument("project_id")
+    p_delete.add_argument("project_id").completer = _project_completer
     p_delete.set_defaults(func=cmd_delete)
 
     p_users = sub.add_parser("users", help="list users in a project")
     add_env_tenant_args(p_users)
-    p_users.add_argument("project_id")
+    p_users.add_argument("project_id").completer = _project_completer
     p_users.set_defaults(func=cmd_users)
 
     p_set_role = sub.add_parser("set-role", help="set/update a user's role in a project")
     add_env_tenant_args(p_set_role)
-    p_set_role.add_argument("project_id")
+    p_set_role.add_argument("project_id").completer = _project_completer
     p_set_role.add_argument("user_id")
     p_set_role.add_argument("--role", required=True, help="e.g. owner, editor, viewer")
     p_set_role.set_defaults(func=cmd_set_role)
 
     p_remove_user = sub.add_parser("remove-user", help="remove a user from a project")
     add_env_tenant_args(p_remove_user)
-    p_remove_user.add_argument("project_id")
+    p_remove_user.add_argument("project_id").completer = _project_completer
     p_remove_user.add_argument("user_id")
     p_remove_user.set_defaults(func=cmd_remove_user)
+
+    p_pick = sub.add_parser(
+        "pick", help="interactively fuzzy-pick a project, printing its id",
+        description="Launches a Textual fuzzy-filter picker and prints only the "
+                     "chosen project id to stdout, for use like: "
+                     "--project $(rana projects pick)",
+    )
+    add_env_tenant_args(p_pick)
+    p_pick.set_defaults(func=cmd_pick)
 
 
 def cmd_list(args):
@@ -114,3 +128,13 @@ def cmd_set_role(args):
 def cmd_remove_user(args):
     client = get_client(args)
     emit(client.delete(f"/tenants/{{tenant_id}}/projects/{args.project_id}/users/{args.user_id}"))
+
+
+def cmd_pick(args):
+    client = get_client(args)
+    items = list(paginate_all(client, "/tenants/{tenant_id}/projects"))
+    chosen = pick(items, label_fn=lambda p: f"{p.get('code', '?')} — {p.get('name', '')}",
+                  id_fn=lambda p: p.get("id"))
+    if chosen is None:
+        sys.exit(1)
+    print(chosen)

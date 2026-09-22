@@ -1,4 +1,7 @@
-from ._shared import add_env_tenant_args, emit, get_client
+import csv
+
+from ..output import print_table
+from ._shared import add_env_tenant_args, die, emit, get_client
 
 
 def register(subparsers):
@@ -37,6 +40,18 @@ def register(subparsers):
     p_resend.add_argument("invitation_id")
     p_resend.set_defaults(func=cmd_send_email)
 
+    p_bulk = sub.add_parser(
+        "bulk-create", help="invite many users at once from a CSV",
+        description="CSV columns: email (required), tenant_role (default 'guest'), "
+                     "project, project_role (both optional, same meaning as `create`'s flags). "
+                     "There's no bulk endpoint server-side, so this sends one request per row "
+                     "and reports per-row success/failure.",
+    )
+    add_env_tenant_args(p_bulk)
+    p_bulk.add_argument("csv_path")
+    p_bulk.add_argument("--dry-run", action="store_true", help="validate and print the plan, send nothing")
+    p_bulk.set_defaults(func=cmd_bulk_create)
+
 
 def cmd_list(args):
     client = get_client(args)
@@ -70,3 +85,47 @@ def cmd_revoke(args):
 def cmd_send_email(args):
     client = get_client(args)
     emit(client.post(f"/tenants/{{tenant_id}}/invitations/{args.invitation_id}/send-email"))
+
+
+def _read_invitation_rows(csv_path):
+    try:
+        with open(csv_path, newline="") as f:
+            rows = list(csv.DictReader(f))
+    except OSError as exc:
+        die(f"Could not read {csv_path}: {exc}")
+
+    errors = []
+    for i, row in enumerate(rows, start=2):  # row 1 is the header
+        if not row.get("email", "").strip():
+            errors.append(f"line {i}: missing email")
+    if errors:
+        die("Invalid CSV:\n" + "\n".join(errors))
+    return rows
+
+
+def cmd_bulk_create(args):
+    rows = _read_invitation_rows(args.csv_path)
+    plan = [{
+        "email": row["email"].strip(),
+        "tenant_role": row.get("tenant_role", "").strip() or "guest",
+        "project": row.get("project", "").strip() or None,
+        "project_role": row.get("project_role", "").strip() or None,
+    } for row in rows]
+
+    if args.dry_run:
+        print_table(plan, [("email", "email"), ("tenant_role", "tenant_role"),
+                            ("project", "project"), ("project_role", "project_role")])
+        return
+
+    client = get_client(args)
+    results = []
+    for body in plan:
+        resp = client.post("/tenants/{tenant_id}/invitations", json_body=body)
+        results.append({
+            "email": body["email"], "ok": "yes" if resp.ok else "no",
+            "detail": "" if resp.ok else f"HTTP {resp.status_code}: {resp.text[:200]}",
+        })
+
+    print_table(results, [("email", "email"), ("ok", "ok"), ("detail", "detail")])
+    if any(r["ok"] == "no" for r in results):
+        raise SystemExit(1)

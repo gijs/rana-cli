@@ -18,6 +18,13 @@ def build_parser():
 
 def main(argv=None):
     parser = build_parser()
+
+    try:
+        import argcomplete
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
+
     args = parser.parse_args(argv)
     try:
         args.func(args)

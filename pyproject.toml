@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rana-cli"
+version = "0.1.0"
+description = "Command-line interface for the Rana water management platform API"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Gijs Nijholt" }]
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.scripts]
+rana = "rana_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

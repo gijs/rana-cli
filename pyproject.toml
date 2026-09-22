@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Gijs Nijholt" }]
 dependencies = [
     "requests>=2.28",
+    "textual>=0.58",
 ]
 
 [project.scripts]

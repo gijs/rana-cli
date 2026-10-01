@@ -10,7 +10,6 @@ import sys
 
 import requests
 
-from ..output import print_response
 from ._shared import add_env_tenant_args, die, emit, get_client, id_completer
 
 _project_completer = id_completer("/tenants/{tenant_id}/projects")
@@ -18,6 +17,10 @@ _dataset_completer = id_completer("/tenants/{tenant_id}/datasets")
 
 
 class UploadFailed(Exception):
+    pass
+
+
+class DownloadFailed(Exception):
     pass
 
 
@@ -117,14 +120,22 @@ def register(subparsers):
                         help="keep going after a failed file instead of stopping")
     p_upt.set_defaults(func=cmd_upload_tree)
 
-    p_sync = sub.add_parser("sync", help="mirror a local directory to a project/dataset's file tree")
+    p_sync = sub.add_parser(
+        "sync", help="mirror a local directory and a project/dataset's file tree (either direction)",
+        description="By default, mirrors local_dir -> the remote tree (upload changed files). "
+                     "Pass --pull to mirror the other way instead: remote tree -> local_dir "
+                     "(download changed files). --pull is project-only, matching `files download`.",
+    )
     add_env_tenant_args(p_sync)
     _add_scope_args(p_sync)
     p_sync.add_argument("local_dir")
-    p_sync.add_argument("--dest", default="", help="remote root path to sync to")
+    p_sync.add_argument("--dest", default="", help="remote root path to sync with")
     p_sync.add_argument("--branch", default="main")
+    p_sync.add_argument("--pull", action="store_true",
+                         help="download remote -> local instead of uploading local -> remote")
     p_sync.add_argument("--delete", action="store_true",
-                         help="also delete remote files that have no local counterpart")
+                         help="also delete files on the receiving side that have no counterpart "
+                              "on the source side (remote files when pushing, local files when --pull)")
     p_sync.add_argument("--dry-run", action="store_true",
                          help="show what would change without changing anything")
     p_sync.add_argument("-y", "--yes", action="store_true", help="don't prompt before deleting")
@@ -154,25 +165,40 @@ def cmd_history(args):
                      query={"path": args.path, "ref": args.ref}))
 
 
+def _download_one(client, scope, resource_id, ref, remote_path, local_path):
+    """Download one remote file to `local_path`. Raises DownloadFailed on any failure."""
+    resp = client.get(f"/tenants/{{tenant_id}}/{scope}/{resource_id}/files/download",
+                       query={"path": remote_path, "ref": ref})
+    if not resp.ok:
+        raise DownloadFailed(f"HTTP {resp.status_code} getting download URL: {resp.text}")
+    url = resp.json()["url"]
+
+    parent = os.path.dirname(local_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    try:
+        with requests.get(url, stream=True, timeout=120) as dl:
+            dl.raise_for_status()
+            with open(local_path, "wb") as f:
+                for chunk in dl.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+    except (requests.RequestException, OSError) as exc:
+        raise DownloadFailed(f"download failed: {exc}")
+
+
 def cmd_download(args):
     client = get_client(args)
     scope, resource_id = _scope(args, allow_dataset=False)
-    resp = client.get(f"/tenants/{{tenant_id}}/{scope}/{resource_id}/files/download",
-                       query={"path": args.path, "ref": args.ref})
-    if not resp.ok:
-        print_response(resp)
-        return
-    data = resp.json()
     if not args.save_to:
-        emit(resp)
+        emit(client.get(f"/tenants/{{tenant_id}}/{scope}/{resource_id}/files/download",
+                         query={"path": args.path, "ref": args.ref}))
         return
-    url = data["url"]
-    with requests.get(url, stream=True, timeout=120) as dl:
-        dl.raise_for_status()
-        with open(args.save_to, "wb") as f:
-            for chunk in dl.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-    print(f"Saved to {args.save_to}")
+    try:
+        _download_one(client, scope, resource_id, args.ref, args.path, args.save_to)
+    except DownloadFailed as exc:
+        die(str(exc))
+    else:
+        print(f"Saved to {args.save_to}")
 
 
 def cmd_rm(args):
@@ -337,13 +363,21 @@ def _needs_upload(remote_file, local_abs_path):
 
 def cmd_sync(args):
     client = get_client(args)
-    scope, resource_id = _scope(args)
-    if not os.path.isdir(args.local_dir):
+    scope, resource_id = _scope(args, allow_dataset=not args.pull)
+
+    if not args.pull and not os.path.isdir(args.local_dir):
         die(f"{args.local_dir} is not a directory")
 
     remote = _list_remote_tree(client, scope, resource_id, args.branch, args.dest)
     local = dict((rel, abs_path) for abs_path, rel in _iter_local_files(args.local_dir))
 
+    if args.pull:
+        _cmd_sync_pull(client, scope, resource_id, args, remote, local)
+    else:
+        _cmd_sync_push(client, scope, resource_id, args, remote, local)
+
+
+def _cmd_sync_push(client, scope, resource_id, args, remote, local):
     to_upload = [rel for rel in local if rel not in remote or _needs_upload(remote[rel], local[rel])]
     remote_only = sorted(set(remote) - set(local))
 
@@ -378,12 +412,58 @@ def cmd_sync(args):
                 return
         delete_base = f"/tenants/{{tenant_id}}/{scope}/{resource_id}/files/delete"
         for rel in remote_only:
-            resp = client.delete(delete_base, query={"path": _remote_path(args.dest, rel), "branch": args.branch})
+            resp = client.delete(delete_base,
+                                  query={"path": _remote_path(args.dest, rel), "branch": args.branch})
             if not resp.ok:
                 failed += 1
                 print(f"failed to delete {rel}: HTTP {resp.status_code}", file=sys.stderr)
             else:
                 print(f"deleted: {rel}")
+
+    if failed:
+        sys.exit(1)
+
+
+def _cmd_sync_pull(client, scope, resource_id, args, remote, local):
+    to_download = [rel for rel in remote if rel not in local or _needs_upload(remote[rel], local[rel])]
+    local_only = sorted(set(local) - set(remote))
+
+    print(f"{len(to_download)} to download, {len(remote) - len(to_download)} unchanged, "
+          f"{len(local_only)} local-only" + (f" (deleting {len(local_only)})" if args.delete else ""))
+
+    if args.dry_run:
+        for rel in to_download:
+            print(f"  download: {rel}")
+        for rel in local_only:
+            print(f"  local-only{' (would delete)' if args.delete else ''}: {rel}")
+        return
+
+    failed = 0
+    for rel in to_download:
+        local_path = os.path.join(args.local_dir, *rel.split("/"))
+        try:
+            _download_one(client, scope, resource_id, args.branch, _remote_path(args.dest, rel), local_path)
+        except DownloadFailed as exc:
+            failed += 1
+            print(f"failed: {rel}: {exc}", file=sys.stderr)
+        else:
+            print(f"downloaded: {rel}")
+
+    if args.delete and local_only:
+        if not args.yes:
+            answer = input(f"Delete {len(local_only)} local file(s)? [y/N] ")
+            if answer.strip().lower() != "y":
+                print("Skipping delete.")
+                if failed:
+                    sys.exit(1)
+                return
+        for rel in local_only:
+            try:
+                os.remove(local[rel])
+                print(f"deleted: {rel}")
+            except OSError as exc:
+                failed += 1
+                print(f"failed to delete {rel}: {exc}", file=sys.stderr)
 
     if failed:
         sys.exit(1)

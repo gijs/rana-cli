@@ -81,6 +81,10 @@ rana files upload-tree ./output --project <project_id> --dest results/
 rana files sync ./output --project <project_id> --dest results/ --dry-run
 rana files sync ./output --project <project_id> --dest results/ --delete   # prompts before deleting
 
+# ...or mirror the other way: download a project's file tree to disk
+rana files sync ./backup --project <project_id> --pull --dry-run
+rana files sync ./backup --project <project_id> --pull --delete   # prompts before deleting locally
+
 # Invite a batch of people from a CSV (columns: email, tenant_role, project, project_role)
 rana invitations bulk-create ./team.csv --dry-run
 rana invitations bulk-create ./team.csv
@@ -106,6 +110,14 @@ rana publications comments resolve <publication_id> <comment_id>
 # Fuzzy-pick a project/dataset instead of typing its id
 rana files ls --project $(rana projects pick) --path some/dir
 ```
+
+# Sync locally with a project/dataset/publication
+
+```bash
+rana files sync ./backup --project <project_id> --pull --dry-run
+rana files sync ./backup --project <project_id> --pull --delete   # prompts before deleting locally
+```
+
 
 `rana shell` launches an interactive Textual command console — type any of
 the commands above without the leading `rana`, with history and a
